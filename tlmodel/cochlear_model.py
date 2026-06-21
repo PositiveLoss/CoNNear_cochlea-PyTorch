@@ -1,31 +1,29 @@
 # -*- coding: utf-8 -*-
-import numpy as np
 import time
-from scipy.integrate import ode
-from scipy import signal
 import ctypes
 import os
+
+import numpy as np
+from scipy import signal
+from scipy.integrate import ode
 
 DOUBLE = ctypes.c_double
 INT = ctypes.c_int
 PINT = ctypes.POINTER(ctypes.c_int)
-PLONG = ctypes.POINTER(ctypes.c_long)
 PDOUBLE = ctypes.POINTER(ctypes.c_double)
+MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
 class tridiag_matrix(ctypes.Structure):
     _fields_ = [
-        ("aa", ctypes.POINTER(ctypes.c_double)),
-        ("bb", ctypes.POINTER(ctypes.c_double)),
-        ("cc", ctypes.POINTER(ctypes.c_double)),
+        ("a", PDOUBLE),
+        ("b", PDOUBLE),
+        ("c", PDOUBLE),
     ]
 
 
 # load C library
-os.path.dirname(os.path.abspath(__file__))
-libtrisolv = np.ctypeslib.load_library(
-    "tridiag.so", os.path.dirname(os.path.abspath(__file__))
-)
+libtrisolv = np.ctypeslib.load_library("tridiag.so", MODULE_DIR)
 
 # load tridiagonal solver function and defines input
 libtrisolv.solve_tridiagonal.restype = None
@@ -149,7 +147,7 @@ class cochlea_model:
         self.RMSref = 0.6124
         self.Rme = float(0.3045192500000000e12)  # TODO setRme function
         # variable to check if the model is intialize before calling the solver
-        self._is_init = 0
+        self.is_init = False
         self.interplPoint1 = 0
         self.interplPoint2 = 0
         self.interplPoint3 = 0
@@ -198,7 +196,7 @@ class cochlea_model:
         self.initZweig()
         self.initGaussianElimination()
         self.compression_slope_param(compression_slope)
-        self.is_init = 1
+        self.is_init = True
         self.lastT = 0
         self.seed = subject  # change here the seed
         np.random.RandomState(self.seed)
@@ -310,30 +308,24 @@ class cochlea_model:
         # PROBE POINTS               ##
         #
         if self.probe_freq == "all":
-            self.probe_points = np.zeros(len(self.f_resonance) - 1)
-            for i in range(len(self.f_resonance) - 1):
-                self.probe_points[i] = i + 1
-            self.probe_points = self.probe_points
+            self.probe_points = np.arange(1, len(self.f_resonance), dtype=int)
             self.cf = self.f_resonance[1 : len(self.f_resonance)]
         elif self.probe_freq == "half":
-            self.probe_points = np.zeros((len(self.f_resonance) - 1) / 2)
-            for i in range((len(self.f_resonance) - 1) / 2):
-                self.probe_points[i] = i + 1
-            self.probe_points = self.probe_points
-            self.cf = self.f_resonance[range(1, len(self.f_resonance), 2)]
+            self.probe_points = np.arange(1, len(self.f_resonance), 2, dtype=int)
+            self.cf = self.f_resonance[self.probe_points]
         elif self.probe_freq == "abr":
             #            self.probe_points=np.zeros([401,1])
-            self.probe_points = np.array(range(110, 911, 2))
-            self.cf = self.f_resonance[range(110, 911, 2)]
+            self.probe_points = np.arange(110, 911, 2, dtype=int)
+            self.cf = self.f_resonance[self.probe_points]
         #            print(np.shape(self.probe_points))
         #            print('abr')
         else:
             self.probe_points = np.zeros(self.probe_freq.size, dtype=int)
             for i in range(len(self.probe_freq)):
-                idx_help = abs((self.f_resonance) - np.float(self.probe_freq[i]))
+                idx_help = abs((self.f_resonance) - float(self.probe_freq[i]))
                 self.probe_points[i] = np.argmin(idx_help)
             self.cf = self.f_resonance[self.probe_points]
-        self.probe_points = np.array(self.probe_points)
+        self.probe_points = np.asarray(self.probe_points, dtype=int)
 
     #        print(np.shape(self.probe_points))
 
@@ -400,9 +392,9 @@ class cochlea_model:
         )
         self.ZASC[1:n] = self.ZASQ[1:n] + self.ZweigMs[1:n] + self.ZweigMs[0 : n - 1]
         self.tridata = tridiag_matrix()
-        self.tridata.aa = self.ZAL.ctypes.data_as(PDOUBLE)
-        self.tridata.bb = self.ZASC.ctypes.data_as(PDOUBLE)
-        self.tridata.cc = self.ZAH.ctypes.data_as(PDOUBLE)
+        self.tridata.a = self.ZAL.ctypes.data_as(PDOUBLE)
+        self.tridata.b = self.ZASC.ctypes.data_as(PDOUBLE)
+        self.tridata.c = self.ZAH.ctypes.data_as(PDOUBLE)
 
     def calculate_g(self):  # same as in fortran
         n = self.n + 1
@@ -516,9 +508,9 @@ class cochlea_model:
 
     def solve(self):
         n = self.n + 1
-        tstart = time.time()
-        if not (self.is_init):
-            print("Error: model to be initialized")
+        start_time = time.perf_counter()
+        if not self.is_init:
+            raise RuntimeError("Model must be initialized before calling solve().")
         length = np.size(self.stim) - 2
         time_length = length * self.dt
         # each probe point signal in a row
@@ -561,11 +553,11 @@ class cochlea_model:
                 self.Vsolution[j, :] = self.V1[1:n]  #
                 self.Ysolution[j, :] = self.Y1[1:n]
             elif self.probe_freq == "half":
-                self.Vsolution[j, :] = self.V1[range(1, n, 2)]
-                self.Ysolution[j, :] = self.Y1[range(1, n, 2)]
+                self.Vsolution[j, :] = self.V1[self.probe_points]
+                self.Ysolution[j, :] = self.Y1[self.probe_points]
             elif self.probe_freq == "abr":
-                self.Vsolution[j, :] = self.V1[range(110, 911, 2)]
-                self.Ysolution[j, :] = self.Y1[range(110, 911, 2)]
+                self.Vsolution[j, :] = self.V1[self.probe_points]
+                self.Ysolution[j, :] = self.Y1[self.probe_points]
             else:
                 self.Vsolution[j, :] = self.V1[
                     self.probe_points
@@ -579,7 +571,7 @@ class cochlea_model:
             1, [600 / (samplerate / 2.0), 4000.0 / (samplerate / 2)], "bandpass"
         )
         self.oto_emission = signal.lfilter(b * self.q0_factor, a, self.oto_emission)
-        elapsed = time.time() - tstart
+        self.solve_elapsed = time.perf_counter() - start_time
 
 
 #        print(elapsed)
