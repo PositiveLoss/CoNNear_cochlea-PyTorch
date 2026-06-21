@@ -1,4 +1,4 @@
-## CoNNear: A convolutional neural-network model of human cochlear mechanics and filter tuning for real-time applications.
+# CoNNear: A convolutional neural-network model of human cochlear mechanics and filter tuning for real-time applications
 
 If you use this code, please cite (bibtex given below [1]):    
 Baby, D., Van Den Broucke, A. & Verhulst, S. A convolutional neural-network model of human cochlear mechanics and filter tuning for real-time applications. Nat Mach Intell (2021). https://doi.org/10.1038/s42256-020-00286-8
@@ -8,41 +8,54 @@ Baby, D., Van Den Broucke, A. & Verhulst, S. A convolutional neural-network mode
 > This work was funded with support from the EU Horizon 2020 programme under grant agreement No 678120 (RobSpear).
 
 
-This repository contains two notebooks made for running and testing the CoNNear model. The full version `connear_notebook.ipynb` holds both the CoNNear model and the reference transmission line (TL) model (Verhulst et al.), the latter can be used as a validation tool. The `connear_notebook_light.ipynb` only runs the CoNNear model, hence decreases significantly the computational time of the full notebook. Both notebooks consist of different blocks corresponding to different sections of the paper. Each block can be adapted by the reader to run variations on the simulations that were described in the paper. 
+This repository contains notebooks for running and testing the CoNNear model. The full version `connear_notebook.ipynb` holds both the CoNNear model and the reference transmission line (TL) model (Verhulst et al.), the latter can be used as a validation tool. The `connear_notebook_light.ipynb` only runs the CoNNear model, which significantly reduces computation time. Both notebooks consist of independent blocks corresponding to different sections of the paper.
 
-Besides the notebooks (both in `.html` and `.ipynb` format) the repository contains the trained model (in the connear folder), a `helper_ops.py` file, this `README.md` document, a license file, a speech fragment (`dutch_sentence.wav`), and the folder that contains the reference TL model (tlmodel). The original Keras weights are still included as `connear/Gmodel.h5`, and the converted PyTorch weights are available as `connear/Gmodel.pt`.
+Besides the notebooks, the repository contains the PyTorch CoNNear implementation (`connear_pytorch.py`), helper utilities (`helper_ops.py`), a speech fragment (`dutch_sentence.wav`), and the reference TL model (`tlmodel`). The original Keras weights are still included as `connear/Gmodel.h5`, and the converted PyTorch weights are available as `connear/Gmodel.pt`.
 
-## How to test the CoNNear model
+## Setup
 
-1. If it's the first time you run the full notebook, you'll have to compile the cochlea_utils.c file that is used for solving the transmission line (TL) model of the cochlea. This requires some C++ compiler which should be installed beforehand. Go the  tlmodel-folder from the terminal and run:
-	```
-	gcc -shared -fpic -O3 -ffast-math -o tridiag.so cochlea_utils.c
-	```
-> If running on google colab: add the following as a code block and run it to compile cochlea_utils.c in the runtime machine.
+This project uses `pyproject.toml`, `uv.lock`, and `.python-version`.
 
->	!gcc -shared -fpic -O3 -ffast-math -o tridiag.so cochlea_utils.c
+```bash
+uv sync
+```
 
-2. Install numpy, scipy and PyTorch in a code environment. The converted notebooks use the PyTorch implementation in `connear_pytorch.py`:
-	```
-	pip install -r requirements.txt
-	```
+If you do not use `uv`, create a virtual environment and install the dependencies from `pyproject.toml` with your preferred Python packaging tool.
 
-3. Run the code blocks from the "Import required python packages and functions" section of the notebook. All other code blocks are independent and can be run in an order of your choice.
+## Running Notebooks
 
-4. Run the desired code blocks and/or adapt the various parameters to look at the performance for similar tasks. All of the code blocks do hold extra comments to clarify the steps or to define the choice of a parameter value. 
+Start Jupyter from the repository root:
+
+```bash
+uv run --with notebook jupyter notebook
+```
+
+Open either:
+
+- `connear_notebook_light.ipynb` for the PyTorch CoNNear model only.
+- `connear_notebook.ipynb` for CoNNear plus the TL reference model.
+
+If you run the full notebook with the TL model for the first time, compile the C helper library:
+
+```bash
+cd tlmodel
+gcc -shared -fpic -O3 -ffast-math -o tridiag.so cochlea_utils.c
+cd ..
+```
+
+For Google Colab or another hosted runtime, run the same `gcc` command in a notebook cell before executing TL-model cells.
     
 ## CoNNear model specifications
 
-The CoNNear model is an 8 layer, tanh, 64 filter length - deep convolutional neural network model,
-trained on a training set containing 2310 speech sentences of the TIMIT speech dataset. It predicts the basilar membrane displacements for 201 cochlear channels, resembling a frequency range from 100Hz (channel 0) to 12kHz (channel 200) based on the Greenwood map.
+The CoNNear model is an 8-layer, tanh, 64-filter-length deep convolutional neural-network model trained on 2310 speech sentences from the TIMIT speech dataset. It predicts basilar membrane displacements for 201 cochlear channels, covering approximately 100 Hz (channel 0) to 12 kHz (channel 200) based on the Greenwood map.
 		
-During the CoNNear simulations, 256 context samples are added at both sides to account for possible loss of information due to the slicing of full speech fragments. 
+During CoNNear simulations, 256 context samples are added on both sides to account for possible information loss when slicing full speech fragments.
 
-The CoNNear model can take a stimulus with a variable sample lengths as an input, however, due to the convolutional character of CoNNear, this sample length has to be a multiple of 16. 
+The CoNNear model can take variable-length stimuli as input. Because of the convolutional architecture, the sample length should be a multiple of 16.
 
 ## PyTorch model
 
-The PyTorch port preserves the original notebook API:
+The notebooks now use the PyTorch port:
 
 ```python
 from connear_pytorch import load_connear
@@ -51,19 +64,19 @@ connear = load_connear("connear/Gmodel.pt")
 prediction = connear.predict(stim)
 ```
 
-To regenerate `connear/Gmodel.pt` from the original Keras HDF5 weights, install `h5py` and run:
+To regenerate `connear/Gmodel.pt` from the original Keras HDF5 weights, run:
 
 ```bash
-python convert_keras_to_pytorch.py
+uv run python convert_keras_to_pytorch.py
 ```
 
 ## System test
 
 The system was tested on a MacBook Pro 2015 (macOS Sierra v10.12.6) with 3.1 GHz Intel Corei7, 16 GB RAM, and on a MacBook Air 2017 (macOS Catalina v10.15.3) with 1.8 GHz Dual-Core Intel Core i5, 8 GB RAM. 
 
-## CoNNear model specifications
+## Runtime notes
 
-The installation time for the Anaconda environment and dependencies is approximately 20 min. The run-time of the first code-blocks in the connear_notebooks is very fast, only the DPOAE simulation code-block is slow due to the specific nature of how to present the stimuli and analyse the results for the DPOAE analysis. This code-block will automatically calculate the ETA (can be up to 25 mins).
+The PyTorch-only notebook cells run quickly on a typical laptop. The DPOAE simulation and TL reference model cells are slower because they run many stimulus presentations and analyses; the DPOAE block can take up to about 25 minutes.
 
 ----
 For questions, please reach out to one of the corresponding authors
