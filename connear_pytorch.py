@@ -1,4 +1,4 @@
-"""PyTorch implementation of the pretrained CoNNear cochlea model."""
+"""Reusable PyTorch CoNNear cochlea model and feature extractor."""
 
 from __future__ import annotations
 
@@ -17,17 +17,6 @@ KERNEL_SIZE = 64
 STRIDE = 2
 HIDDEN_CHANNELS = 128
 OUTPUT_CHANNELS = 201
-
-KERAS_TO_TORCH_WEIGHT_MAP = {
-    "enc1.weight": ("model_1/conv1d_1/kernel:0", (2, 1, 0)),
-    "enc2.weight": ("model_1/conv1d_2/kernel:0", (2, 1, 0)),
-    "enc3.weight": ("model_1/conv1d_3/kernel:0", (2, 1, 0)),
-    "enc4.weight": ("model_1/conv1d_4/kernel:0", (2, 1, 0)),
-    "dec1.weight": ("model_1/conv2d_transpose_1/kernel:0", (2, 1, 0)),
-    "dec2.weight": ("model_1/conv2d_transpose_2/kernel:0", (2, 1, 0)),
-    "dec3.weight": ("model_1/conv2d_transpose_3/kernel:0", (2, 1, 0)),
-    "dec4.weight": ("model_1/conv2d_transpose_4/kernel:0", (2, 1, 0)),
-}
 
 
 def _same_pad_1d(x: Tensor, kernel_size: int, stride: int) -> Tensor:
@@ -183,42 +172,26 @@ class CoNNear(nn.Module):
         print(f"Trainable params: {trainable:,}")
 
 
-def keras_h5_to_state_dict(h5_path: ArrayLikePath) -> dict[str, Tensor]:
-    """Convert the original Keras ``Gmodel.h5`` weights into a PyTorch state dict."""
-    try:
-        import h5py
-    except ImportError as exc:
-        raise ImportError("h5py is required to convert Keras .h5 weights") from exc
-
-    h5_path = Path(h5_path)
-    state_dict = {}
-    with h5py.File(h5_path, "r") as h5_file:
-        for torch_name, (keras_name, axes) in KERAS_TO_TORCH_WEIGHT_MAP.items():
-            weights = np.asarray(h5_file[keras_name])
-            if weights.ndim == 4:
-                weights = weights[:, 0, :, :]
-            weights = np.transpose(weights, axes).copy()
-            state_dict[torch_name] = torch.from_numpy(weights)
-    return state_dict
-
-
 def load_connear(
     weights_path: ArrayLikePath = "connear/Gmodel.pt",
     map_location: str | torch.device = "cpu",
 ) -> CoNNear:
-    """Load CoNNear from a converted PyTorch state dict or the original Keras HDF5 file."""
+    """Load CoNNear from a converted PyTorch state dict."""
     weights_path = Path(weights_path)
+    if weights_path.suffix == ".h5":
+        raise ValueError(
+            "load_connear() expects converted PyTorch weights. "
+            "Run convert_keras_to_pytorch.py first or use connear_conversion.py."
+        )
+
     model = CoNNear()
 
-    if weights_path.suffix == ".h5":
-        state_dict = keras_h5_to_state_dict(weights_path)
-    else:
-        try:
-            state_dict = torch.load(
-                weights_path, map_location=map_location, weights_only=True
-            )
-        except TypeError:
-            state_dict = torch.load(weights_path, map_location=map_location)
+    try:
+        state_dict = torch.load(
+            weights_path, map_location=map_location, weights_only=True
+        )
+    except TypeError:
+        state_dict = torch.load(weights_path, map_location=map_location)
 
     model.load_state_dict(state_dict)
     model.to(map_location)
@@ -226,12 +199,62 @@ def load_connear(
     return model
 
 
-def save_converted_weights(
-    h5_path: ArrayLikePath = "connear/Gmodel.h5",
-    output_path: ArrayLikePath = "connear/Gmodel.pt",
-) -> Path:
-    """Write a converted PyTorch state dict from the original Keras weights."""
-    output_path = Path(output_path)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    torch.save(keras_h5_to_state_dict(h5_path), output_path)
-    return output_path
+@torch.no_grad()
+def extract_features(
+    audio: np.ndarray | Tensor,
+    model: CoNNear | None = None,
+    weights_path: ArrayLikePath = "connear/Gmodel.pt",
+    device: str | torch.device | None = None,
+    batch_size: int | None = None,
+) -> np.ndarray | Tensor:
+    """Extract CoNNear basilar-membrane features from audio.
+
+    Input shape can be ``(samples,)``, ``(batch, samples)``, or
+    ``(batch, samples, 1)``. NumPy input returns NumPy output; tensor input
+    returns tensor output. Output shape is ``(batch, samples - 512, 201)``.
+    """
+    return_numpy = isinstance(audio, np.ndarray)
+    target_device = torch.device(device) if device is not None else None
+    if model is None:
+        model = load_connear(weights_path, map_location=target_device or "cpu")
+    elif target_device is not None:
+        model = model.to(target_device)
+
+    if return_numpy:
+        return model.predict(
+            _as_batched_channels_last(audio),
+            batch_size=batch_size,
+            device=target_device,
+        )
+
+    tensor = _as_batched_channels_last(audio)
+    tensor = tensor.to(
+        device=target_device or next(model.parameters()).device,
+        dtype=next(model.parameters()).dtype,
+    )
+    was_training = model.training
+    model.eval()
+    outputs = []
+    batch_size = batch_size or len(tensor)
+    if batch_size <= 0:
+        raise ValueError("batch_size must be a positive integer")
+    for start in range(0, len(tensor), batch_size):
+        outputs.append(model(tensor[start : start + batch_size]))
+    if was_training:
+        model.train()
+    return torch.cat(outputs, dim=0)
+
+
+def _as_batched_channels_last(audio: np.ndarray | Tensor) -> np.ndarray | Tensor:
+    if audio.ndim == 1:
+        audio = audio[None, :, None]
+    elif audio.ndim == 2:
+        audio = audio[:, :, None]
+    elif audio.ndim != 3:
+        raise ValueError(
+            "audio must have shape "
+            "(samples,), (batch, samples), or (batch, samples, 1)"
+        )
+    if audio.shape[-1] != 1:
+        raise ValueError("audio must have exactly one channel in the last dimension")
+    return audio

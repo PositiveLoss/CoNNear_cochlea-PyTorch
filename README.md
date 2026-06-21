@@ -58,10 +58,12 @@ The CoNNear model can take variable-length stimuli as input. Because of the conv
 The notebooks now use the PyTorch port:
 
 ```python
-from connear_pytorch import load_connear
+from connear_pytorch import extract_features, load_connear
 
 connear = load_connear("connear/Gmodel.pt")
 prediction = connear.predict(stim)
+
+features = extract_features(stim, model=connear)
 ```
 
 To regenerate `connear/Gmodel.pt` from the original Keras HDF5 weights, run:

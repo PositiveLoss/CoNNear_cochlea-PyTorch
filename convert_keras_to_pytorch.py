@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import argparse
 
-from connear_pytorch import save_converted_weights
+from connear_conversion import save_converted_weights
 
 
 def main() -> None:
