@@ -12,6 +12,22 @@ import torch.nn.functional as F
 
 
 ArrayLikePath = Union[str, Path]
+CONTEXT_SAMPLES = 256
+KERNEL_SIZE = 64
+STRIDE = 2
+HIDDEN_CHANNELS = 128
+OUTPUT_CHANNELS = 201
+
+KERAS_TO_TORCH_WEIGHT_MAP = {
+    "enc1.weight": ("model_1/conv1d_1/kernel:0", (2, 1, 0)),
+    "enc2.weight": ("model_1/conv1d_2/kernel:0", (2, 1, 0)),
+    "enc3.weight": ("model_1/conv1d_3/kernel:0", (2, 1, 0)),
+    "enc4.weight": ("model_1/conv1d_4/kernel:0", (2, 1, 0)),
+    "dec1.weight": ("model_1/conv2d_transpose_1/kernel:0", (2, 1, 0)),
+    "dec2.weight": ("model_1/conv2d_transpose_2/kernel:0", (2, 1, 0)),
+    "dec3.weight": ("model_1/conv2d_transpose_3/kernel:0", (2, 1, 0)),
+    "dec4.weight": ("model_1/conv2d_transpose_4/kernel:0", (2, 1, 0)),
+}
 
 
 def _same_pad_1d(x: Tensor, kernel_size: int, stride: int) -> Tensor:
@@ -52,24 +68,50 @@ class CoNNear(nn.Module):
     original notebooks can keep using ``connear.predict(...)``-style arrays.
     """
 
-    def __init__(self, output_channels: int = 201):
+    def __init__(self, output_channels: int = OUTPUT_CHANNELS):
         super().__init__()
-        self.enc1 = KerasSameConv1d(1, 128, kernel_size=64, stride=2)
-        self.enc2 = KerasSameConv1d(128, 128, kernel_size=64, stride=2)
-        self.enc3 = KerasSameConv1d(128, 128, kernel_size=64, stride=2)
-        self.enc4 = KerasSameConv1d(128, 128, kernel_size=64, stride=2)
+        self.enc1 = KerasSameConv1d(1, HIDDEN_CHANNELS, KERNEL_SIZE, STRIDE)
+        self.enc2 = KerasSameConv1d(
+            HIDDEN_CHANNELS, HIDDEN_CHANNELS, KERNEL_SIZE, STRIDE
+        )
+        self.enc3 = KerasSameConv1d(
+            HIDDEN_CHANNELS, HIDDEN_CHANNELS, KERNEL_SIZE, STRIDE
+        )
+        self.enc4 = KerasSameConv1d(
+            HIDDEN_CHANNELS, HIDDEN_CHANNELS, KERNEL_SIZE, STRIDE
+        )
 
         self.dec1 = nn.ConvTranspose1d(
-            128, 128, kernel_size=64, stride=2, padding=31, bias=False
+            HIDDEN_CHANNELS,
+            HIDDEN_CHANNELS,
+            kernel_size=KERNEL_SIZE,
+            stride=STRIDE,
+            padding=31,
+            bias=False,
         )
         self.dec2 = nn.ConvTranspose1d(
-            256, 128, kernel_size=64, stride=2, padding=31, bias=False
+            HIDDEN_CHANNELS * 2,
+            HIDDEN_CHANNELS,
+            kernel_size=KERNEL_SIZE,
+            stride=STRIDE,
+            padding=31,
+            bias=False,
         )
         self.dec3 = nn.ConvTranspose1d(
-            256, 128, kernel_size=64, stride=2, padding=31, bias=False
+            HIDDEN_CHANNELS * 2,
+            HIDDEN_CHANNELS,
+            kernel_size=KERNEL_SIZE,
+            stride=STRIDE,
+            padding=31,
+            bias=False,
         )
         self.dec4 = nn.ConvTranspose1d(
-            256, output_channels, kernel_size=64, stride=2, padding=31, bias=False
+            HIDDEN_CHANNELS * 2,
+            output_channels,
+            kernel_size=KERNEL_SIZE,
+            stride=STRIDE,
+            padding=31,
+            bias=False,
         )
 
     def forward(self, x: Tensor, channels_last: bool = True) -> Tensor:
@@ -92,7 +134,7 @@ class CoNNear(nn.Module):
         x = torch.tanh(self.dec3(x))
         x = torch.cat([x, c1], dim=1)
         x = self.dec4(x)
-        x = x[..., 256:-256]
+        x = x[..., CONTEXT_SAMPLES:-CONTEXT_SAMPLES]
 
         if channels_last:
             x = x.transpose(1, 2)
@@ -108,6 +150,8 @@ class CoNNear(nn.Module):
     ) -> np.ndarray:
         """Keras-compatible NumPy prediction helper."""
         del verbose
+        if len(x) == 0:
+            raise ValueError("predict() requires at least one input sample")
         was_training = self.training
         self.eval()
         target_device = (
@@ -116,6 +160,8 @@ class CoNNear(nn.Module):
             else next(self.parameters()).device
         )
         batch_size = batch_size or len(x)
+        if batch_size <= 0:
+            raise ValueError("batch_size must be a positive integer")
         outputs = []
         for start in range(0, len(x), batch_size):
             batch = torch.as_tensor(
@@ -145,20 +191,9 @@ def keras_h5_to_state_dict(h5_path: ArrayLikePath) -> dict[str, Tensor]:
         raise ImportError("h5py is required to convert Keras .h5 weights") from exc
 
     h5_path = Path(h5_path)
-    mapping = {
-        "enc1.weight": ("model_1/conv1d_1/kernel:0", (2, 1, 0)),
-        "enc2.weight": ("model_1/conv1d_2/kernel:0", (2, 1, 0)),
-        "enc3.weight": ("model_1/conv1d_3/kernel:0", (2, 1, 0)),
-        "enc4.weight": ("model_1/conv1d_4/kernel:0", (2, 1, 0)),
-        "dec1.weight": ("model_1/conv2d_transpose_1/kernel:0", (2, 1, 0)),
-        "dec2.weight": ("model_1/conv2d_transpose_2/kernel:0", (2, 1, 0)),
-        "dec3.weight": ("model_1/conv2d_transpose_3/kernel:0", (2, 1, 0)),
-        "dec4.weight": ("model_1/conv2d_transpose_4/kernel:0", (2, 1, 0)),
-    }
-
     state_dict = {}
     with h5py.File(h5_path, "r") as h5_file:
-        for torch_name, (keras_name, axes) in mapping.items():
+        for torch_name, (keras_name, axes) in KERAS_TO_TORCH_WEIGHT_MAP.items():
             weights = np.asarray(h5_file[keras_name])
             if weights.ndim == 4:
                 weights = weights[:, 0, :, :]
